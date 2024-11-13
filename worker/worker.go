@@ -1,8 +1,11 @@
 package worker
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"log"
+	"math/rand/v2"
 	"sync"
 	"time"
 
@@ -43,11 +46,10 @@ func (w *Worker) executeJob(job job.Job) result.Result {
 		WorkerID: w.ID,
 	}
 
-	time.Sleep(time.Duration(100+job.Priority*50) * time.Millisecond)
-
-	if time.Now().UnixNano()%10 == 0 {
+	if rand.Float64() < 0.05 { // 5% chance of failure
 		result.Error = errors.New("random processing error")
 	} else {
+		time.Sleep(time.Duration(100+job.Priority*50) * time.Millisecond)
 		result.Output = fmt.Sprintf("Processed job %d with priority %d", job.ID, job.Priority)
 	}
 
@@ -57,11 +59,14 @@ func (w *Worker) executeJob(job job.Job) result.Result {
 
 func (w *Worker) processJob(job job.Job) result.Result {
 	var res result.Result
-	var err error
 	startTime := time.Now()
 
-	err = w.RateLimiter.Wait(job.Ctx)
-	if err != nil {
+	if job.Ctx == nil {
+		job.Ctx = context.Background()
+	}
+
+	// Wait for rate limiter
+	if err := w.RateLimiter.Wait(job.Ctx); err != nil {
 		return result.Result{
 			JobID:    job.ID,
 			WorkerID: w.ID,
@@ -70,6 +75,12 @@ func (w *Worker) processJob(job job.Job) result.Result {
 		}
 	}
 
+	// Set default MaxRetry if not specified
+	if job.MaxRetry == 0 {
+		job.MaxRetry = 3
+	}
+
+	// Process with retry logic
 	for attempt := 0; attempt <= job.MaxRetry; attempt++ {
 		select {
 		case <-job.Ctx.Done():
@@ -82,11 +93,20 @@ func (w *Worker) processJob(job job.Job) result.Result {
 			}
 		default:
 			res = w.executeJob(job)
-			if res.Error == nil || attempt == job.MaxRetry {
+			if res.Error == nil {
 				res.Attempt = attempt
 				return res
 			}
-			time.Sleep(time.Duration(attempt*attempt) * 100 * time.Millisecond)
+
+			if attempt < job.MaxRetry {
+				log.Printf("Job %d failed attempt %d/%d: %v. Retrying...", job.ID, attempt+1, job.MaxRetry, res.Error)
+				time.Sleep(time.Duration(attempt*attempt) * 100 * time.Millisecond)
+				continue
+			}
+
+			// Max retries reached
+			res.Attempt = attempt
+			return res
 		}
 	}
 

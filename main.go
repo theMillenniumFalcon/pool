@@ -42,7 +42,6 @@ func main() {
 
 	for i := 0; i < numJobs; i++ {
 		jobCtx, jobCancel := context.WithTimeout(ctx, 10*time.Second)
-		defer jobCancel()
 
 		job := job.Job{
 			ID:       i,
@@ -52,6 +51,13 @@ func main() {
 			MaxRetry: 3,
 		}
 		jobQueue <- job
+
+		time.Sleep(50 * time.Millisecond)
+
+		go func(cancel context.CancelFunc) {
+			time.Sleep(11 * time.Second)
+			cancel()
+		}(jobCancel)
 	}
 
 	wg.Wait()
